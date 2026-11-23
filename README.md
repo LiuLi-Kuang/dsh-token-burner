@@ -1,5 +1,7 @@
 # dsh-token-burner
 
+![test](https://github.com/LiuLi-Kuang/dsh-token-burner/actions/workflows/test.yml/badge.svg)
+
 > A DSH plugin that burns API tokens on purpose. It starts when it is loaded, stops instantly when you tell it to, and shows the rate in **Settings → Token 燃烧器**.
 >
 > Why open source: it is a small, complete example of two DSH plugin patterns — a host half driven by `ctx.llm.stream()` with `AbortSignal`, and a client half mounted through `settings.section` — that are hard to get right from the docs alone.

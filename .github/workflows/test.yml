@@ -1,0 +1,32 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: node ${{ matrix.node }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      # 两个测试都不联网、不调用模型，跑完是零花费。
+      - name: host half — start / burn / stop / preset switch
+        run: node tests/selftest.mjs
+
+      - name: client half — loader id / inject / settings.section
+        run: node tests/section.test.mjs
