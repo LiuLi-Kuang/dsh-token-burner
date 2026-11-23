@@ -1,0 +1,41 @@
+{
+  "name": "dsh-token-burner",
+  "version": "0.1.0",
+  "description": "A DSH plugin that burns API tokens at a controlled rate: starts on load, stops on demand, shows the rate in Settings.",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "token",
+    "burner",
+    "load-test"
+  ],
+  "private": false,
+  "license": "MIT",
+  "type": "module",
+  "main": "entry.js",
+  "exports": {
+    ".": "./entry.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "entry.js",
+    "client.js",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node tests/selftest.mjs && node tests/section.test.mjs"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [],
+      "platform": "web"
+    }
+  }
+}
