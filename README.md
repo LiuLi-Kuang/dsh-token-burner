@@ -38,7 +38,7 @@
 插件按 `link:` 依赖装进 profile（改文件即生效，不用重装）：
 
 ```bash
-git clone https://github.com/<you>/dsh-token-burner.git
+git clone https://github.com/LiuLi-Kuang/dsh-token-burner.git
 cd ~/.dsh/profiles/desktop
 pnpm add "link:C:/path/to/dsh-token-burner"
 ```

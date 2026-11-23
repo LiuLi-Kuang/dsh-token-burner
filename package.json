@@ -12,6 +12,14 @@
   ],
   "private": false,
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/LiuLi-Kuang/dsh-token-burner.git"
+  },
+  "homepage": "https://github.com/LiuLi-Kuang/dsh-token-burner#readme",
+  "bugs": {
+    "url": "https://github.com/LiuLi-Kuang/dsh-token-burner/issues"
+  },
   "type": "module",
   "main": "entry.js",
   "exports": {
