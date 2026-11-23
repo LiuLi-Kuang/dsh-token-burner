@@ -11,6 +11,8 @@
  */
 
 import assert from 'node:assert/strict'
+import os from 'node:os'
+import path from 'node:path'
 import { apply } from '../entry.js'
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -75,20 +77,30 @@ function makeCtx(counter) {
 }
 
 /** 发一个假请求，把 handler 的响应收回来看。 */
-async function call(handler, { method = 'GET' } = {}) {
-  const headers = { host: '127.0.0.1:65100' }
-  const req = { method, headers }
-  let body = ''
+async function call(handler, { method = 'GET', body } = {}) {
+  const headers = { host: '127.0.0.1:65100', 'content-type': 'application/json' }
+  const payload = body === undefined ? [] : [Buffer.from(JSON.stringify(body), 'utf8')]
+  const req = {
+    method,
+    headers,
+    async *[Symbol.asyncIterator]() {
+      for (const chunk of payload) yield chunk
+    },
+  }
+  let responseBody = ''
   const res = {
     statusCode: 0,
     setHeader: () => {},
     end: (chunk) => {
-      body += chunk ?? ''
+      responseBody += chunk ?? ''
     },
   }
   await handler(req, res)
-  return { status: res.statusCode, json: body === '' ? null : JSON.parse(body) }
+  return { status: res.statusCode, json: responseBody === '' ? null : JSON.parse(responseBody) }
 }
+
+// 档位是持久化的，测试必须写在临时 DSH_HOME 里，别动真实的那份。
+process.env.DSH_HOME = path.join(os.tmpdir(), 'dsh-token-burner-test')
 
 const counter = { calls: 0 }
 const { ctx, routes, runCleanup } = makeCtx(counter)
@@ -118,7 +130,17 @@ assert.equal(afterStop.json.running, false, '停止后 running 应为 false')
 await sleep(300)
 assert.equal(counter.calls, callsAtStop, '停止后不应再发请求')
 
-// 3) 再开 + 停用插件 → 也必须停
+// 3) 换档：停着的燃烧器只改参数，不会自己点火
+const presetPath = '/plugins/dsh-token-burner/api/preset'
+const switched = await call(routes.get(presetPath), { method: 'POST', body: { preset: 'high' } })
+assert.equal(switched.json.ok, true, `换档应该成功：${JSON.stringify(switched.json)}`)
+const afterPreset = await call(routes.get(statePath))
+assert.equal(afterPreset.json.preset, 'high', '档位应该切成 high')
+assert.equal(afterPreset.json.workers, 8, 'high 档是 8 路')
+assert.equal(afterPreset.json.fillerKb, 32, 'high 档是 32KB')
+assert.equal(afterPreset.json.running, false, '换档不该把停着的燃烧器拉起来')
+
+// 4) 再开 + 停用插件 → 也必须停
 const restarted = await call(routes.get(startPath), { method: 'POST' })
 assert.equal(restarted.json.ok, true)
 await sleep(150)
@@ -128,7 +150,7 @@ const callsAtDispose = counter.calls
 await sleep(300)
 assert.equal(counter.calls, callsAtDispose, '停用插件后不应再发请求')
 
-console.log('✓ selftest 通过：开 → 烧 → 停 → 真停，计数也正常')
+console.log('✓ selftest 通过：开 → 烧 → 停 → 真停 → 换档，计数也正常')
 console.log(`  一共发了 ${String(counter.calls)} 次假请求；最后一次快照：`, {
   turns: afterStop.json.turns,
   tokens: afterStop.json.tokens.total,

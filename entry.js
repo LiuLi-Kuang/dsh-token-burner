@@ -20,15 +20,29 @@
  * 计费是真的：这里每 1k token 都会出现在账单上。没有 dry-run。
  */
 
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { dirname, join } from 'node:path'
+
 /** 面板/控制接口的路径前缀。 */
 const API = '/plugins/dsh-token-burner/api'
+
+/**
+ * 两档预设。设置页里那组按钮就是在这两个之间切，默认 max。
+ * 只改这两个数就够——它们决定了每秒能倒出去多少 token。
+ */
+const PRESETS = {
+  max: { workers: 16, fillerKb: 64, label: '16 路 × 64KB' },
+  high: { workers: 8, fillerKb: 32, label: '8 路 × 32KB' },
+}
 
 /** 一条请求都没发出去时不至于空转的兜底配置。 */
 const DEFAULTS = {
   autoStart: true,
   provider: 'magpie',
   model: 'workbuddy/deepseek-v4.1-flash',
-  workers: 3,
+  preset: 'max',
+  workers: 4,
   maxTokens: 8192,
   gapMs: 250,
   fillerKb: 0,
@@ -57,6 +71,50 @@ function text(value, fallback) {
 /** 一轮唯一标记：防止 provider 侧前缀缓存把重发的提示算成折扣价。 */
 function nonce() {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+}
+
+/**
+ * 解析 preset：显式给了已知预设就用它；给了 workers/fillerKb 就当作自定义档；
+ * 都没给就走默认预设。
+ * @param {any} raw - patch 行里的原始 config。
+ * @returns {'max'|'high'|'custom'} 档位名。
+ */
+function presetKeyOf(raw) {
+  const name = typeof raw.preset === 'string' ? raw.preset.trim().toLowerCase() : ''
+  if (PRESETS[name] !== undefined) return name
+  if (raw.workers !== undefined || raw.fillerKb !== undefined) return 'custom'
+  return DEFAULTS.preset
+}
+
+/**
+ * 上次在设置页里选的档位。
+ *
+ * 单独放一个文件而不是回头去改 profile 的 cordis.patch.yml：插件不该去写宿主的配置层，
+ * 而且这个选择本来就属于"运行时偏好"，跟部署配置不是一回事。删掉这个文件就回到 patch 里的值。
+ * @returns {'max'|'high'|''} 存过的档位，没有就是空串。
+ */
+function readSavedPreset() {
+  try {
+    const home = process.env.DSH_HOME || join(homedir(), '.dsh')
+    const parsed = JSON.parse(readFileSync(join(home, 'token-burner.json'), 'utf8'))
+    const name = typeof parsed?.preset === 'string' ? parsed.preset.trim().toLowerCase() : ''
+    return PRESETS[name] === undefined ? '' : name
+  } catch {
+    return ''
+  }
+}
+
+/** 原子写回档位；写不进去也不该影响正在跑的燃烧（下次启动回落 patch 值而已）。 */
+function savePreset(name) {
+  try {
+    const home = process.env.DSH_HOME || join(homedir(), '.dsh')
+    const file = join(home, 'token-burner.json')
+    mkdirSync(dirname(file), { recursive: true })
+    writeFileSync(file, `${JSON.stringify({ preset: name, at: new Date().toISOString() }, null, 2)}\n`)
+    return true
+  } catch {
+    return false
+  }
 }
 
 /** 把任意 throw 收成一行能给面板看的文本。 */
@@ -96,14 +154,17 @@ function sleep(ms, signal) {
  */
 function normalize(config) {
   const raw = config !== null && typeof config === 'object' ? config : {}
+  const preset = presetKeyOf(raw)
+  const tuned = PRESETS[preset]
   return {
     autoStart: raw.autoStart !== false,
     provider: text(raw.provider, DEFAULTS.provider),
     model: text(raw.model, DEFAULTS.model),
-    workers: clampInt(raw.workers, DEFAULTS.workers, 1, 32),
+    preset,
+    workers: tuned ? tuned.workers : clampInt(raw.workers, DEFAULTS.workers, 1, 32),
     maxTokens: clampInt(raw.maxTokens, DEFAULTS.maxTokens, 64, 200_000),
     gapMs: clampInt(raw.gapMs, DEFAULTS.gapMs, 0, 60_000),
-    fillerKb: clampInt(raw.fillerKb, DEFAULTS.fillerKb, 0, 512),
+    fillerKb: tuned ? tuned.fillerKb : clampInt(raw.fillerKb, DEFAULTS.fillerKb, 0, 512),
     reasoningEffort: text(raw.reasoningEffort, ''),
     system: text(raw.system, DEFAULTS.system),
     prompt: text(raw.prompt, DEFAULTS.prompt),
@@ -159,6 +220,9 @@ function createBurner(ctx, cfg, log) {
       running,
       provider: cfg.provider,
       model: cfg.model,
+      preset: cfg.preset,
+      presetLabel: PRESETS[cfg.preset]?.label ?? `自定义 ${String(cfg.workers)} 路 × ${String(cfg.fillerKb)}KB`,
+      presets: Object.entries(PRESETS).map(([key, value]) => ({ key, ...value })),
       workers: cfg.workers,
       maxTokens: cfg.maxTokens,
       gapMs: cfg.gapMs,
@@ -307,7 +371,7 @@ function createBurner(ctx, cfg, log) {
       void task.finally(() => tasks.delete(task))
     }
     log(
-      `[token-burner] v2 开烧：${cfg.workers} 路 · ${cfg.provider}/${cfg.model} · maxTokens=${String(cfg.maxTokens)} · filler=${String(cfg.fillerKb)}KB`,
+      `[token-burner] v2 开烧（${cfg.preset}）：${cfg.workers} 路 · ${cfg.provider}/${cfg.model} · maxTokens=${String(cfg.maxTokens)} · filler=${String(cfg.fillerKb)}KB`,
     )
     return { ok: true }
   }
@@ -337,7 +401,36 @@ function createBurner(ctx, cfg, log) {
     return { ok: true }
   }
 
-  return { start, stop, snapshot, cfg }
+  /**
+   * 换档：设置页那组按钮调的就是这里。
+   *
+   * 运行中换档会先熄火再按新参数点火（计数归零）——因为 16 路和 8 路的差别不是
+   * "下一条请求换个大小"，而是同时有几条流在飞，只能重建。
+   * @param {string} name - 'max' | 'high'。
+   */
+  async function setPreset(name) {
+    const key = String(name ?? '').trim().toLowerCase()
+    const next = PRESETS[key]
+    if (next === undefined) {
+      return { ok: false, error: `未知档位：${String(name)}（可选 ${Object.keys(PRESETS).join(' / ')}）` }
+    }
+    if (cfg.preset === key) return { ok: true, preset: key, unchanged: true }
+
+    const wasRunning = running
+    if (wasRunning) await stop(`切换到 ${next.label}`)
+    cfg.preset = key
+    cfg.workers = next.workers
+    cfg.fillerKb = next.fillerKb
+    const saved = savePreset(key)
+    if (wasRunning) {
+      const started = await start()
+      if (started.ok !== true) return { ok: false, error: started.error, preset: key, saved }
+    }
+    log(`[token-burner] 切档 → ${next.label}（${String(next.workers)} 路 · ${String(next.fillerKb)}KB）`)
+    return { ok: true, preset: key, label: next.label, workers: next.workers, fillerKb: next.fillerKb, saved }
+  }
+
+  return { start, stop, setPreset, snapshot, cfg }
 }
 
 /** 包名，loader 用它挂这一行。 */
@@ -353,6 +446,13 @@ export const inject = ['llm', 'webServer', 'connection']
  */
 export function apply(ctx, config) {
   const cfg = normalize(config)
+  // 上次在设置页选过档位就以它为准（参数还是同一个 PRESETS 表，不会跑出合法范围）。
+  const savedPreset = readSavedPreset()
+  if (savedPreset !== '' && PRESETS[savedPreset] !== undefined) {
+    cfg.preset = savedPreset
+    cfg.workers = PRESETS[savedPreset].workers
+    cfg.fillerKb = PRESETS[savedPreset].fillerKb
+  }
   const log = (line) => {
     try {
       ctx.logger?.info?.(line)
@@ -460,6 +560,16 @@ export function apply(ctx, config) {
       return
     }
     json(res, 200, await burner.stop('面板停止'))
+  })
+
+  // 换档：设置页那组按钮。默认 16 路 × 64KB，另一档 8 路 × 32KB。
+  route(`${API}/preset`, async (req, res) => {
+    if (req.method !== 'POST') {
+      json(res, 405, { ok: false, error: '用 POST' })
+      return
+    }
+    const body = await readBody(req)
+    json(res, 200, await burner.setPreset(body?.preset))
   })
 
   ctx.effect(() => () => {

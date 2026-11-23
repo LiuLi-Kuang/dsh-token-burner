@@ -45,6 +45,10 @@ window.__ModuleLoader__.load({
       '.tb-err{color:var(--dsw-alias-state-error-primary);font-size:12px;line-height:18px;margin-top:8px;white-space:pre-line}',
       '.tb-warn{margin-top:12px;font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary);background:rgba(226,86,31,.10);border-radius:8px;padding:10px 12px}',
       '.tb-hint{color:var(--dsw-alias-label-tertiary);font-size:11.5px;line-height:17px;margin-top:6px}',
+      '.tb-presets{display:flex;gap:6px;flex-wrap:wrap;margin-top:12px}',
+      '.tb-seg{border:1px solid var(--dsw-alias-border-l2);background:transparent;color:var(--dsw-alias-label-primary);border-radius:999px;font-size:12.5px;height:30px;padding:0 14px;cursor:pointer;font-variant-numeric:tabular-nums}',
+      '.tb-seg[data-on="1"]{background:var(--dsw-alias-brand-primary);border-color:var(--dsw-alias-brand-primary);color:#fff}',
+      '.tb-seg:disabled{opacity:.5;cursor:default}',
     ].join('')
 
     function useStyleOnce() {
@@ -104,12 +108,13 @@ window.__ModuleLoader__.load({
         }
       }, [refresh])
 
-      const control = async (action) => {
-        setBusy(action)
+      const control = async (action, payload) => {
+        setBusy(action === 'preset' ? `preset:${String(payload?.preset ?? '')}` : action)
         try {
           const response = await fetch(`${API}/${action}`, {
             method: 'POST',
-            headers: { accept: 'application/json' },
+            headers: { accept: 'application/json', 'content-type': 'application/json' },
+            ...(payload === undefined ? {} : { body: JSON.stringify(payload) }),
           })
           if (!response.ok) throw new Error(`HTTP ${String(response.status)}`)
           const result = await response.json()
@@ -123,6 +128,41 @@ window.__ModuleLoader__.load({
 
       const running = state?.running === true
       const tokens = state?.tokens ?? {}
+
+      /** 两档预设的分段开关：16 路 × 64KB（默认）/ 8 路 × 32KB。 */
+      const presetRow = () => {
+        const presets = Array.isArray(state?.presets) ? state.presets : []
+        if (presets.length === 0) return null
+        return h(
+          'div',
+          null,
+          h(
+            'div',
+            { className: 'tb-presets' },
+            presets.map((preset) =>
+              h(
+                'button',
+                {
+                  key: preset.key,
+                  type: 'button',
+                  className: 'tb-seg',
+                  'data-on': state?.preset === preset.key ? '1' : '0',
+                  disabled: busy !== '',
+                  onClick: () => void control('preset', { preset: preset.key }),
+                },
+                busy === `preset:${String(preset.key)}`
+                  ? '切换中…'
+                  : `${String(preset.workers)} 路 × ${String(preset.fillerKb)}KB`,
+              ),
+            ),
+          ),
+          h(
+            'div',
+            { className: 'tb-hint' },
+            '切档会重建所有流（计数归零）；选择记在 ~/.dsh/token-burner.json，重启之后仍然生效。',
+          ),
+        )
+      }
 
       return h(
         'div',
@@ -145,6 +185,8 @@ window.__ModuleLoader__.load({
           '停止是即时 abort——没有队列，所以关掉之后不会有“排着队继续烧”的请求。',
         ),
 
+        presetRow(),
+
         h(
           'div',
           { className: 'tb-grid' },
@@ -158,6 +200,7 @@ window.__ModuleLoader__.load({
           'div',
           { className: 'tb-rows' },
           row('提供方 / 模型', `${state?.provider ?? '—'} / ${state?.model ?? '—'}`),
+          row('当前档位', state?.presetLabel ?? '—'),
           row('并发 · 输出上限', `${String(state?.workers ?? '—')} 路 · ${fmt(state?.maxTokens ?? 0)} max`),
           row('输入填充', Number(state?.fillerKb ?? 0) > 0 ? `${String(state.fillerKb)} KB/请求` : '关（纯输出流）'),
           row('自动开烧', state?.autoStart === true ? '开（加载即烧）' : '关（手动）'),

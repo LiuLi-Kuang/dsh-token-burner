@@ -2,13 +2,13 @@
 #
 # autoStart 才是「打开就自动运行」的那个开关：
 #   true  → 插件一被加载（开机 / 启用 / profile 重组）就立刻开烧
-#   false → 只挂面板，等你点「开始」
-# 想关：插件页停用它，或点面板上的「停止」（立即 abort），或把 autoStart 改 false。
+#   false → 只挂设置页，等你点「开始」
+# 想关：设置页点「停止」，或插件页停用它，或把 autoStart 改 false。
 #
 # ── 两种烧法，按你要的"快"选 ───────────────────────────────────────────
 #   输出流（贵、慢）：maxTokens 大 + 长文提示，单路 40–120 token/s，天花板约 300/s
-#   输入流（便宜、极快）：fillerKb 撑大输入 + maxTokens 极小，prefill 是并行吞吐
-# 现在这份配置是"输入流"：每条请求先吃 16KB 填充，再让它只回两个字。
+#   输入流（便宜、极快）：填充 KB 撑大输入 + maxTokens 极小，prefill 是并行吞吐
+# 现在是"输入流"：每条请求先吃 64KB 填充，再让它只回两个字。
 - insert:
     - id: token-burner
       name: 'dsh-token-burner'
@@ -16,14 +16,13 @@
         autoStart: true
         provider: magpie
         model: workbuddy/deepseek-v4.1-flash
-        # 并发路数：每条流各发各的请求；处理器上限 32 路
-        workers: 8
+        # 档位：max = 16 路 × 64KB（默认），high = 8 路 × 32KB
+        # 设置页那组按钮切的就是这一行；切过之后记在 ~/.dsh/token-burner.json，重启仍生效
+        preset: max
         # 输出上限压到最小：这一轮不靠生成烧 token，靠 prefill
         maxTokens: 128
         # 一条流完立刻下一条
         gapMs: 0
-        # 每条请求塞多少 KB 填充文本（1KB ≈ 1k 中文字符 ≈ 1k+ token）
-        fillerKb: 32
         # 不要思考，缩短单轮
         reasoningEffort: ''
         prompt: |

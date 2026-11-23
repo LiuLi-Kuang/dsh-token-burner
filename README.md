@@ -62,12 +62,23 @@ pnpm add "link:C:/path/to/dsh-token-burner"
 | `autoStart` | `true` | 加载即开烧。`false` 就只挂设置页等你点 |
 | `provider` | `magpie` | 换成你自己的提供方 |
 | `model` | `workbuddy/deepseek-v4.1-flash` | 换成你自己的模型；启动时用 `resolveModelInfo` 校验 |
-| `workers` | `4` | 并发流数（1–32） |
+| `preset` | `max` | 档位：`max` = 16 路 × 64KB，`high` = 8 路 × 32KB。设置页那组按钮切的就是它 |
 | `maxTokens` | `128` | 单次输出上限 |
 | `gapMs` | `0` | 两轮之间歇多久 |
-| `fillerKb` | `16` | 每条请求先垫多少 KB 填充文本；`0` = 纯输出流 |
+| `workers` / `fillerKb` | — | 只有 `preset` 缺省时才生效（自定义档），平时由档位决定 |
 | `reasoningEffort` | 空 | `low` / `high` / `max`，会额外产生 reasoning token |
 | `system` / `prompt` | 内置 | `{nonce}` 会替换成随机串 |
+
+## 界面
+
+「设置 → Token 燃烧器」里是一节（`settings.section`，不是浮窗）：
+
+- **档位按钮**：`16 路 × 64KB`（默认）/ `8 路 × 32KB`，点了立刻重建所有流（计数归零）
+- 四格数字：总 token / 速率 / 输入·输出 / 轮次·时长
+- 五行状态：提供方·模型、当前档位、并发·输出上限、输入填充、自动开烧、错误原因
+- 开始 / 停止 / 刷新
+
+切档的选择写到 `~/.dsh/token-burner.json`——插件不回头去改 profile 的 `cordis.patch.yml`（那是宿主的部署配置），删掉这个文件就回到 patch 里的值。
 
 ## 两种烧法（实测）
 
@@ -77,7 +88,8 @@ pnpm add "link:C:/path/to/dsh-token-burner"
 |---|---|---|
 | 输出流（贵、慢） | `fillerKb: 0`、`maxTokens: 16384`、长文提示 | 2 路 173s / 41,956 token ≈ **14.5k/min**；8 路仍只有 **19k/min** |
 | 输入流（便宜、快） | `fillerKb: 16`、`maxTokens: 128`、只回两个字 | 4 路 97s / 1,184,506 token ≈ **732k/min** |
-| 输入流加档 | `fillerKb: 32`、`workers: 8` | 66s / 2,797,144 token ≈ **2.54M/min**，零报错 |
+| 输入流 8×32 | `preset: high` | 66s / 2,797,144 token ≈ **2.54M/min**，零报错 |
+| 输入流 16×64（默认） | `preset: max` | 92s / 9,972,285 token ≈ **6.5M/min**，零报错 |
 
 输入流里 99% 是输入 token（单价便宜）；输出流反之，但被生成速度卡死。
 
@@ -136,7 +148,7 @@ node tests/section.test.mjs # 客户端半边：id / inject / settings.section �
 ## 已知边界
 
 - 如果某个 provider 不回 `usage` 分片，设置页的 token 会一直是 0（但账单照收）。
-- `workers` 超过 8 路时本地网关可能先撑不住；报错会退避重试，额度/凭据类错误会直接全停。
+- 16 路是实测过的上限（92 秒 997 万 token，零失败）；再往上没试，本地网关可能先撑不住。报错会退避重试，额度/凭据类错误会直接全停。
 - 实测环境是 Windows + 本地网关，其他环境的速率会不一样。
 
 ## License
