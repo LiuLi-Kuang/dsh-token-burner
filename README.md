@@ -1,6 +1,7 @@
 # dsh-token-burner
 
-![test](https://github.com/LiuLi-Kuang/dsh-token-burner/actions/workflows/test.yml/badge.svg)
+[![test](https://github.com/LiuLi-Kuang/dsh-token-burner/actions/workflows/test.yml/badge.svg)](https://github.com/LiuLi-Kuang/dsh-token-burner/actions/workflows/test.yml)
+[![release](https://img.shields.io/github/v/release/LiuLi-Kuang/dsh-token-burner)](https://github.com/LiuLi-Kuang/dsh-token-burner/releases/latest)
 
 > A DSH plugin that burns API tokens on purpose. It starts when it is loaded, stops instantly when you tell it to, and shows the rate in **Settings → Token 燃烧器**.
 >
