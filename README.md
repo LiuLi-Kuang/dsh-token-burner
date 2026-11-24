@@ -1,5 +1,7 @@
 # dsh-token-burner
 
+**中文** | [English](README.en.md)
+
 [![test](https://github.com/LiuLi-Kuang/dsh-token-burner/actions/workflows/test.yml/badge.svg)](https://github.com/LiuLi-Kuang/dsh-token-burner/actions/workflows/test.yml)
 [![release](https://img.shields.io/github/v/release/LiuLi-Kuang/dsh-token-burner)](https://github.com/LiuLi-Kuang/dsh-token-burner/releases/latest)
 
@@ -65,6 +67,7 @@ pnpm add "link:C:/path/to/dsh-token-burner"
 | `autoStart` | `false` | 只有显式写 `true` 才会加载即开烧；缺省一律当「不烧」。**默认关**，打开 DSH 不会自己跑 |
 | `provider` | `magpie` | 换成你自己的提供方 |
 | `model` | `workbuddy/deepseek-v4.1-flash` | 换成你自己的模型；启动时用 `resolveModelInfo` 校验 |
+| `locale` | `auto` | 界面语言：`auto` 跟随系统（zh 系才中文，其余英文）/ `zh` / `en`。设置页里也能改，记在 `~/.dsh/token-burner.json` |
 | `preset` | `max` | 档位：`max` = 16 路 × 64KB，`high` = 8 路 × 32KB。设置页那组按钮切的就是它 |
 | `maxTokens` | `128` | 单次输出上限 |
 | `gapMs` | `0` | 两轮之间歇多久 |
@@ -77,6 +80,7 @@ pnpm add "link:C:/path/to/dsh-token-burner"
 「设置 → Token 燃烧器」里是一节（`settings.section`，不是浮窗）：
 
 - **档位按钮**：`16 路 × 64KB`（默认）/ `8 路 × 32KB`，点了立刻重建所有流（计数归零）
+- **语言按钮**：`跟随系统` / `中文` / `English`，默认跟随系统，切换只影响这一页文案
 - 四格数字：总 token / 速率 / 输入·输出 / 轮次·时长
 - 五行状态：提供方·模型、当前档位、并发·输出上限、输入填充、自动开烧、错误原因
 - 开始 / 停止 / 刷新
@@ -156,6 +160,7 @@ node tests/section.test.mjs # 客户端半边：id / inject / settings.section �
 
 ## 变更
 
+- **0.2.0** — 中英双语。语言默认跟随系统（`auto`：zh 系给中文，其余英文），设置页可切 `跟随系统 / 中文 / English`，选择写进 `~/.dsh/token-burner.json`。宿主侧把停止原因从句子改成了代码（`panel` / `plugin-disabled` / `preset-switch` / `fatal` / `too-many-errors` / `model-unavailable`），文案由客户端按语言翻。
 - **0.1.1** — 修掉「开机自启」。`autoStart` 默认改为 `false`，并且只有**显式写 `true`** 才算开：缺省、拼错、这行被删掉，一律当不烧。0.1.0 里默认是开，2026-11-24 那次开机自启在 92 秒内烧掉了 15,061,579 token。
 - **0.1.0** — 首个版本：两档预设（16×64 默认 / 8×32）、设置页开关与实时速率、CI。
 

@@ -15,6 +15,9 @@
       name: 'dsh-token-burner'
       config:
         autoStart: false
+        # 界面语言：auto = 跟随系统（只有 zh 系才给中文，其余英文），也可写 zh / en。
+        # 设置页里也能改，改完记在 ~/.dsh/token-burner.json —— 这里的值只是初始值。
+        locale: auto
         provider: magpie
         model: workbuddy/deepseek-v4.1-flash
         # 档位：max = 16 路 × 64KB（默认），high = 8 路 × 32KB

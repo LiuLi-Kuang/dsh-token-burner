@@ -73,8 +73,39 @@ assert.ok(registered !== null, '必须注册一个 section')
 assert.equal(registered.spec.name, 'settings.section')
 assert.equal(registered.spec.id, 'token-burner')
 assert.equal(typeof registered.spec.label, 'function')
-assert.equal(registered.spec.label(), 'Token 燃烧器')
 assert.equal(typeof registered.component, 'function', 'section 必须是函数组件')
 
-console.log('✓ section 结构自测通过：id / inject / 注册点都对')
-console.log('  挂载点', registered.spec.name, '· 顺序', registered.spec.order, '· 标签', registered.spec.label())
+// 侧栏标签跟随系统语言。Node 自带 navigator，这里按需改写再断言两个方向。
+const setNavigator = (language) => {
+  try {
+    Object.defineProperty(globalThis, 'navigator', { value: { language }, configurable: true })
+    return true
+  } catch {
+    return false
+  }
+}
+
+if (setNavigator('zh-CN')) {
+  assert.equal(registered.spec.label(), 'Token 燃烧器', '中文系统下标签应该是中文')
+  setNavigator('en-US')
+  assert.equal(registered.spec.label(), 'Token Burner', '英文系统下标签应该是英文')
+} else {
+  // 拿不到 navigator 的时候只校验它落在两种语言之一
+  assert.ok(['Token 燃烧器', 'Token Burner'].includes(registered.spec.label()))
+}
+
+// 两张文案表的 key 必须一一对应，否则切换语言会掉文案
+const zhKeys = Object.keys(mod.STRINGS.zh).sort()
+const enKeys = Object.keys(mod.STRINGS.en).sort()
+assert.deepEqual(enKeys, zhKeys, `zh/en 文案 key 不一致：${enKeys.filter((k) => !zhKeys.includes(k)).join(',')}`)
+
+console.log('✓ section 结构自测通过：id / inject / 注册点 / 双语标签都对')
+console.log(
+  '  挂载点',
+  registered.spec.name,
+  '· 顺序',
+  registered.spec.order,
+  '· 文案条目',
+  zhKeys.length,
+  '× 2 种语言',
+)

@@ -34,3 +34,7 @@ jobs:
       # 0.1.1 的回归：默认不许自启动（0.1.0 曾让用户开机就烧掉 1500 万 token）
       - name: no auto-start by default
         run: node tests/no-autostart.test.mjs
+
+      # 0.2.0：auto / zh / en 语言开关与落盘
+      - name: locale switch
+        run: node tests/locale.test.mjs

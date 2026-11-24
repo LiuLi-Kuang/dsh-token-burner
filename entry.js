@@ -32,13 +32,14 @@ const API = '/plugins/dsh-token-burner/api'
  * 只改这两个数就够——它们决定了每秒能倒出去多少 token。
  */
 const PRESETS = {
-  max: { workers: 16, fillerKb: 64, label: '16 路 × 64KB' },
-  high: { workers: 8, fillerKb: 32, label: '8 路 × 32KB' },
+  max: { workers: 16, fillerKb: 64, label: '16 × 64KB' },
+  high: { workers: 8, fillerKb: 32, label: '8 × 32KB' },
 }
 
 /** 一条请求都没发出去时不至于空转的兜底配置。 */
 const DEFAULTS = {
   autoStart: false,
+  locale: 'auto',
   provider: 'magpie',
   model: 'workbuddy/deepseek-v4.1-flash',
   preset: 'max',
@@ -87,34 +88,57 @@ function presetKeyOf(raw) {
 }
 
 /**
- * 上次在设置页里选的档位。
+ * 运行时偏好（档位、语言）存在 ~/.dsh/token-burner.json。
  *
- * 单独放一个文件而不是回头去改 profile 的 cordis.patch.yml：插件不该去写宿主的配置层，
- * 而且这个选择本来就属于"运行时偏好"，跟部署配置不是一回事。删掉这个文件就回到 patch 里的值。
- * @returns {'max'|'high'|''} 存过的档位，没有就是空串。
+ * 单独一个文件而不是回头去改 profile 的 cordis.patch.yml：插件不该去写宿主的配置层，
+ * 而且这些选择本来就属于"运行时偏好"，跟部署配置不是一回事。删掉这个文件就回到 patch 里的值。
+ * @returns {{preset?: string, locale?: string}} 存过的偏好，读不到就是空对象。
  */
-function readSavedPreset() {
+function readSaved() {
   try {
-    const home = process.env.DSH_HOME || join(homedir(), '.dsh')
-    const parsed = JSON.parse(readFileSync(join(home, 'token-burner.json'), 'utf8'))
-    const name = typeof parsed?.preset === 'string' ? parsed.preset.trim().toLowerCase() : ''
-    return PRESETS[name] === undefined ? '' : name
+    const file = join(process.env.DSH_HOME || join(homedir(), '.dsh'), 'token-burner.json')
+    const parsed = JSON.parse(readFileSync(file, 'utf8'))
+    return parsed !== null && typeof parsed === 'object' ? parsed : {}
   } catch {
-    return ''
+    return {}
   }
 }
 
-/** 原子写回档位；写不进去也不该影响正在跑的燃烧（下次启动回落 patch 值而已）。 */
-function savePreset(name) {
+/** 合并写回偏好；写不进去也不该影响正在跑的燃烧（下次启动回落 patch 值而已）。 */
+function saveSaved(patch) {
   try {
     const home = process.env.DSH_HOME || join(homedir(), '.dsh')
     const file = join(home, 'token-burner.json')
     mkdirSync(dirname(file), { recursive: true })
-    writeFileSync(file, `${JSON.stringify({ preset: name, at: new Date().toISOString() }, null, 2)}\n`)
+    const next = { ...readSaved(), ...patch, at: new Date().toISOString() }
+    writeFileSync(file, `${JSON.stringify(next, null, 2)}
+`)
     return true
   } catch {
     return false
   }
+}
+
+/** 支持的界面语言。`auto` = 跟随系统。 */
+const LOCALES = ['auto', 'zh', 'en']
+
+/**
+ * 系统语言：宿主跑在 Electron 里，Intl 拿到的是 OS 的区域设置。
+ * 只有明确是中文才给 zh，其他一律 en（英文在国际上更安全的默认）。
+ * @returns {'zh'|'en'} 解析后的语言。
+ */
+function systemLocale() {
+  try {
+    const tag = String(Intl.DateTimeFormat().resolvedOptions().locale ?? '').toLowerCase()
+    return tag.startsWith('zh') ? 'zh' : 'en'
+  } catch {
+    return 'en'
+  }
+}
+
+/** 把 auto 解析成具体语言。 */
+function resolveLocale(locale) {
+  return locale === 'auto' || LOCALES.includes(locale) !== true ? systemLocale() : locale
 }
 
 /** 把任意 throw 收成一行能给面板看的文本。 */
@@ -162,6 +186,8 @@ function normalize(config) {
     autoStart: raw.autoStart === true,
     provider: text(raw.provider, DEFAULTS.provider),
     model: text(raw.model, DEFAULTS.model),
+    // 'auto' = 跟随系统；解析留给 resolveLocale()，这样改了系统语言不用改配置
+    locale: LOCALES.includes(raw.locale) ? raw.locale : DEFAULTS.locale,
     preset,
     workers: tuned ? tuned.workers : clampInt(raw.workers, DEFAULTS.workers, 1, 32),
     maxTokens: clampInt(raw.maxTokens, DEFAULTS.maxTokens, 64, 200_000),
@@ -194,7 +220,9 @@ function createBurner(ctx, cfg, log) {
   let controller = null
   let startedAt = 0
   let stoppedAt = 0
-  let stopReason = ''
+  let stopCode = ''
+  let stopDetail = ''
+  let lastErrorCode = ''
   let lastError = ''
   let inflight = 0
   let lastTurnMs = 0
@@ -236,8 +264,12 @@ function createBurner(ctx, cfg, log) {
       errors: stats.errors,
       inflight,
       lastTurnMs,
-      stopReason,
+      stopCode,
+      stopDetail,
+      lastErrorCode,
       lastError,
+      locale: cfg.locale,
+      resolvedLocale: resolveLocale(cfg.locale),
       tokens: {
         input: stats.inputTokens,
         output: stats.outputTokens,
@@ -311,16 +343,17 @@ function createBurner(ctx, cfg, log) {
       } catch (error) {
         if (!running || signal.aborted) break
         stats.errors += 1
+        lastErrorCode = 'lane-error'
         lastError = describe(error)
         log(`[token-burner] lane ${String(index)} 失败：${lastError}`)
         if (fatal(lastError)) {
           // 额度/凭据问题：立刻停掉所有 lane，而不是把余额再打几十次。
-          void stop(`致命错误：${lastError}`)
+          void stop('fatal', lastError)
           break
         }
         if (stats.errors >= 12) {
           // 连环失败（网关没起、模型挂了）：退避几十秒也救不回来，别让它在后台空转刷日志。
-          void stop(`连续失败 ${String(stats.errors)} 次，已自动停止`)
+          void stop('too-many-errors', String(stats.errors))
           break
         }
         await sleep(Math.min(30_000, 1_000 * 2 ** Math.min(stats.errors, 5)), signal)
@@ -339,8 +372,10 @@ function createBurner(ctx, cfg, log) {
     stats.cacheReadTokens = 0
     stats.reasoningTokens = 0
     lastError = ''
+    lastErrorCode = ''
     lastTurnMs = 0
-    stopReason = ''
+    stopCode = ''
+    stopDetail = ''
     stoppedAt = 0
   }
 
@@ -355,9 +390,11 @@ function createBurner(ctx, cfg, log) {
         await ctx.llm.resolveModelInfo(cfg.provider, cfg.model)
       }
     } catch (error) {
-      lastError = `模型不可用：${describe(error)}`
-      stopReason = lastError
-      return { ok: false, error: lastError }
+      lastErrorCode = 'model-unavailable'
+      lastError = describe(error)
+      stopCode = 'model-unavailable'
+      stopDetail = lastError
+      return { ok: false, error: lastError, code: lastErrorCode }
     }
 
     reset()
@@ -382,10 +419,11 @@ function createBurner(ctx, cfg, log) {
    * 熄火：先关闸（running=false），再 abort 当前所有流。
    * 没有队列，所以这里返回时不会再有任何新请求发出去。
    */
-  async function stop(reason) {
+  async function stop(code = 'manual', detail = '') {
     if (!running) return { ok: true, already: true }
     running = false
-    stopReason = reason ?? '手动停止'
+    stopCode = code
+    stopDetail = detail ?? ''
     stoppedAt = Date.now()
     try {
       controller?.abort(new Error('token-burner stopped'))
@@ -398,7 +436,7 @@ function createBurner(ctx, cfg, log) {
     tasks.clear()
     inflight = 0
     log(
-      `[token-burner] 熄火（${stopReason}）：${String(stats.turns)} 轮 · ${String(stats.totalTokens)} tokens`,
+      `[token-burner] 熄火（${stopCode}${stopDetail === '' ? '' : ' / ' + stopDetail}）：${String(stats.turns)} 轮 · ${String(stats.totalTokens)} tokens`,
     )
     return { ok: true }
   }
@@ -419,11 +457,11 @@ function createBurner(ctx, cfg, log) {
     if (cfg.preset === key) return { ok: true, preset: key, unchanged: true }
 
     const wasRunning = running
-    if (wasRunning) await stop(`切换到 ${next.label}`)
+    if (wasRunning) await stop('preset-switch', key)
     cfg.preset = key
     cfg.workers = next.workers
     cfg.fillerKb = next.fillerKb
-    const saved = savePreset(key)
+    const saved = saveSaved({ preset: key })
     if (wasRunning) {
       const started = await start()
       if (started.ok !== true) return { ok: false, error: started.error, preset: key, saved }
@@ -432,7 +470,23 @@ function createBurner(ctx, cfg, log) {
     return { ok: true, preset: key, label: next.label, workers: next.workers, fillerKb: next.fillerKb, saved }
   }
 
-  return { start, stop, setPreset, snapshot, cfg }
+  /**
+   * 改界面语言。'auto' 跟随系统，'zh'/'en' 是显式覆盖。
+   * 只影响设置页文案，不影响燃烧行为——所以运行中改也不用重建流。
+   * @param {string} name - 'auto' | 'zh' | 'en'。
+   */
+  function setLocale(name) {
+    const key = String(name ?? '').trim().toLowerCase()
+    if (LOCALES.includes(key) !== true) {
+      return { ok: false, error: `unsupported locale: ${String(name)} (${LOCALES.join(' / ')})` }
+    }
+    cfg.locale = key
+    const saved = saveSaved({ locale: key })
+    log(`[token-burner] locale → ${key}（resolved: ${resolveLocale(key)}）`)
+    return { ok: true, locale: key, resolvedLocale: resolveLocale(key), saved }
+  }
+
+  return { start, stop, setPreset, setLocale, snapshot, cfg }
 }
 
 /** 包名，loader 用它挂这一行。 */
@@ -448,13 +502,14 @@ export const inject = ['llm', 'webServer', 'connection']
  */
 export function apply(ctx, config) {
   const cfg = normalize(config)
-  // 上次在设置页选过档位就以它为准（参数还是同一个 PRESETS 表，不会跑出合法范围）。
-  const savedPreset = readSavedPreset()
-  if (savedPreset !== '' && PRESETS[savedPreset] !== undefined) {
-    cfg.preset = savedPreset
-    cfg.workers = PRESETS[savedPreset].workers
-    cfg.fillerKb = PRESETS[savedPreset].fillerKb
+  // 上次在设置页选过档位 / 语言就以它为准（都过一遍白名单，别让坏文件把配置带飞）。
+  const saved = readSaved()
+  if (typeof saved.preset === 'string' && PRESETS[saved.preset] !== undefined) {
+    cfg.preset = saved.preset
+    cfg.workers = PRESETS[saved.preset].workers
+    cfg.fillerKb = PRESETS[saved.preset].fillerKb
   }
+  if (LOCALES.includes(saved.locale)) cfg.locale = saved.locale
   const log = (line) => {
     try {
       ctx.logger?.info?.(line)
@@ -561,7 +616,17 @@ export function apply(ctx, config) {
       json(res, 405, { ok: false, error: '用 POST' })
       return
     }
-    json(res, 200, await burner.stop('面板停止'))
+    json(res, 200, await burner.stop('panel'))
+  })
+
+  // 语言：'auto' 跟随系统，'zh' / 'en' 是显式覆盖。只影响文案，不动燃烧。
+  route(`${API}/locale`, async (req, res) => {
+    if (req.method !== 'POST') {
+      json(res, 405, { ok: false, error: '用 POST' })
+      return
+    }
+    const body = await readBody(req)
+    json(res, 200, burner.setLocale(body?.locale))
   })
 
   // 换档：设置页那组按钮。默认 16 路 × 64KB，另一档 8 路 × 32KB。
@@ -576,7 +641,7 @@ export function apply(ctx, config) {
 
   ctx.effect(() => () => {
     // 停用 / 卸载 / 关机：先熄火，再拆路由。abort 是同步生效的，之后不会再发请求。
-    void burner.stop('插件已停用')
+    void burner.stop('plugin-disabled')
     for (const dispose of disposers) {
       try {
         dispose()
