@@ -30,3 +30,7 @@ jobs:
 
       - name: client half — loader id / inject / settings.section
         run: node tests/section.test.mjs
+
+      # 0.1.1 的回归：默认不许自启动（0.1.0 曾让用户开机就烧掉 1500 万 token）
+      - name: no auto-start by default
+        run: node tests/no-autostart.test.mjs

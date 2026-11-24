@@ -38,7 +38,7 @@ const PRESETS = {
 
 /** 一条请求都没发出去时不至于空转的兜底配置。 */
 const DEFAULTS = {
-  autoStart: true,
+  autoStart: false,
   provider: 'magpie',
   model: 'workbuddy/deepseek-v4.1-flash',
   preset: 'max',
@@ -157,7 +157,9 @@ function normalize(config) {
   const preset = presetKeyOf(raw)
   const tuned = PRESETS[preset]
   return {
-    autoStart: raw.autoStart !== false,
+    // 只有显式写 autoStart: true 才会自动开烧。缺省、拼错、被删掉一律当"不烧"——
+    // 这是个花钱的开关，默认值必须是关，不能靠"没写 false 就算开"。
+    autoStart: raw.autoStart === true,
     provider: text(raw.provider, DEFAULTS.provider),
     model: text(raw.model, DEFAULTS.model),
     preset,

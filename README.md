@@ -3,7 +3,7 @@
 [![test](https://github.com/LiuLi-Kuang/dsh-token-burner/actions/workflows/test.yml/badge.svg)](https://github.com/LiuLi-Kuang/dsh-token-burner/actions/workflows/test.yml)
 [![release](https://img.shields.io/github/v/release/LiuLi-Kuang/dsh-token-burner)](https://github.com/LiuLi-Kuang/dsh-token-burner/releases/latest)
 
-> A DSH plugin that burns API tokens on purpose. It starts when it is loaded, stops instantly when you tell it to, and shows the rate in **Settings → Token 燃烧器**.
+> A DSH plugin that burns API tokens on purpose. It stays idle until you press Start, stops instantly when you tell it to, and shows the rate in **Settings → Token 燃烧器**.
 >
 > Why open source: it is a small, complete example of two DSH plugin patterns — a host half driven by `ctx.llm.stream()` with `AbortSignal`, and a client half mounted through `settings.section` — that are hard to get right from the docs alone.
 
@@ -15,7 +15,7 @@
 
 - **宿主半边**（`entry.js`）用 `ctx.llm.stream()` 起 N 条并发流，把返回的内容全部丢掉，只把 `usage` 分片里的 token 数记下来；
 - **客户端半边**（`client.js`）在 DSH 的「设置」里挂一节，显示速率并给出开始/停止；
-- 插件被加载 = 开烧，被停用 = 立刻 abort，**没有队列**，所以停了就是真的停了。
+- **加载不等于开烧**：装好、开机、profile 重组都不会自动跑；去设置页点「开始」才烧。被停用 = 立刻 abort，**没有队列**，所以停了就是真的停了。
 
 ## ⚠️ 先读这段
 
@@ -62,7 +62,7 @@ pnpm add "link:C:/path/to/dsh-token-burner"
 
 | 键 | 默认 | 说明 |
 |---|---:|---|
-| `autoStart` | `true` | 加载即开烧。`false` 就只挂设置页等你点 |
+| `autoStart` | `false` | 只有显式写 `true` 才会加载即开烧；缺省一律当「不烧」。**默认关**，打开 DSH 不会自己跑 |
 | `provider` | `magpie` | 换成你自己的提供方 |
 | `model` | `workbuddy/deepseek-v4.1-flash` | 换成你自己的模型；启动时用 `resolveModelInfo` 校验 |
 | `preset` | `max` | 档位：`max` = 16 路 × 64KB，`high` = 8 路 × 32KB。设置页那组按钮切的就是它 |
@@ -100,9 +100,9 @@ pnpm add "link:C:/path/to/dsh-token-burner"
 
 | 开 | 关 |
 |---|---|
-| `autoStart: true`（加载即烧） | 设置页「停止」→ `running=false` + `abort()` |
-| 设置页「开始」 | 插件页停用 → dispose：先熄火再拆路由 |
-| 插件页启用 | 卸载依赖 |
+| 设置页「开始」 ← 正常入口 | 设置页「停止」→ `running=false` + `abort()` |
+| 插件页启用（只是把插件装回组合树） | 插件页停用 → dispose：先熄火再拆路由 |
+| 改 `autoStart: true`（开机即烧，慎用） | 改回 `false`，或卸载依赖 |
 
 「关闭就会停止」靠**没有队列**：每轮都是「一条流跑完 → 记数 → 下一轮」，从不往某个队列里塞消息，所以停下之后不存在“还有几十条排着队继续烧”。
 
@@ -153,6 +153,11 @@ node tests/section.test.mjs # 客户端半边：id / inject / settings.section �
 - 如果某个 provider 不回 `usage` 分片，设置页的 token 会一直是 0（但账单照收）。
 - 16 路是实测过的上限（92 秒 997 万 token，零失败）；再往上没试，本地网关可能先撑不住。报错会退避重试，额度/凭据类错误会直接全停。
 - 实测环境是 Windows + 本地网关，其他环境的速率会不一样。
+
+## 变更
+
+- **0.1.1** — 修掉「开机自启」。`autoStart` 默认改为 `false`，并且只有**显式写 `true`** 才算开：缺省、拼错、这行被删掉，一律当不烧。0.1.0 里默认是开，2026-11-24 那次开机自启在 92 秒内烧掉了 15,061,579 token。
+- **0.1.0** — 首个版本：两档预设（16×64 默认 / 8×32）、设置页开关与实时速率、CI。
 
 ## License
 

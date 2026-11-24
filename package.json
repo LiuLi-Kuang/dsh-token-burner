@@ -1,6 +1,6 @@
 {
   "name": "dsh-token-burner",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A DSH plugin that burns API tokens at a controlled rate: starts on load, stops on demand, shows the rate in Settings.",
   "keywords": [
     "dsh",
@@ -35,7 +35,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "test": "node tests/selftest.mjs && node tests/section.test.mjs"
+    "test": "node tests/selftest.mjs && node tests/section.test.mjs && node tests/no-autostart.test.mjs"
   },
   "dsh": {
     "bundle": {

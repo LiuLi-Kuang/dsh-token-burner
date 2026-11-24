@@ -1,9 +1,10 @@
 # 插进 profile 的一行。这里就是所有旋钮，改完由 Host 热重组生效（不用重启）。
 #
-# autoStart 才是「打开就自动运行」的那个开关：
-#   true  → 插件一被加载（开机 / 启用 / profile 重组）就立刻开烧
-#   false → 只挂设置页，等你点「开始」
-# 想关：设置页点「停止」，或插件页停用它，或把 autoStart 改 false。
+# ── autoStart：默认关闭 ────────────────────────────────────────────────
+#   只有显式写 true 才会在插件加载时自动开烧；缺省 / 拼错 / 这一行被删掉，都当"不烧"。
+#   2026-11-24 的事故：早先默认是 true，开机自动跑了一轮 92 秒、1,506 万 token。
+#   现在默认 false —— 打开 DSH 不会烧，去「设置 → Token 燃烧器」点「开始」才烧。
+#   想恢复开机即烧，把下面那行改成 true（清楚代价再改）。
 #
 # ── 两种烧法，按你要的"快"选 ───────────────────────────────────────────
 #   输出流（贵、慢）：maxTokens 大 + 长文提示，单路 40–120 token/s，天花板约 300/s
@@ -13,7 +14,7 @@
     - id: token-burner
       name: 'dsh-token-burner'
       config:
-        autoStart: true
+        autoStart: false
         provider: magpie
         model: workbuddy/deepseek-v4.1-flash
         # 档位：max = 16 路 × 64KB（默认），high = 8 路 × 32KB
