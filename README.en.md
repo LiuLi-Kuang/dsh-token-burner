@@ -5,6 +5,8 @@
 [![test](https://github.com/LiuLi-Kuang/dsh-token-burner/actions/workflows/test.yml/badge.svg)](https://github.com/LiuLi-Kuang/dsh-token-burner/actions/workflows/test.yml)
 [![release](https://img.shields.io/github/v/release/LiuLi-Kuang/dsh-token-burner)](https://github.com/LiuLi-Kuang/dsh-token-burner/releases/latest)
 
+<img src="docs/cover-4x3.jpg" alt="dsh-token-burner promo cover: 6.5M tokens a minute — a DSH plugin written with AI" width="880">
+
 > A DSH plugin that burns API tokens on purpose. It stays idle until you press Start, stops instantly when you tell it to, and shows the rate in **Settings → Token Burner**.
 >
 > Why open source: it is a small, complete example of two DSH plugin patterns — a host half driven by `ctx.llm.stream()` with `AbortSignal`, and a client half mounted through `settings.section` — that are hard to get right from the docs alone.
