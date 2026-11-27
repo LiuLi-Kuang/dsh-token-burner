@@ -26,7 +26,7 @@ jobs:
 
       # 两个测试都不联网、不调用模型，跑完是零花费。
       - name: host half — start / burn / stop / preset switch
-        run: node tests/selftest.mjs
+        run: node tests/selftest.test.mjs
 
       - name: client half — loader id / inject / settings.section
         run: node tests/section.test.mjs
@@ -38,3 +38,7 @@ jobs:
       # 0.2.0：auto / zh / en 语言开关与落盘
       - name: locale switch
         run: node tests/locale.test.mjs
+
+      # 0.3.0：模型目录 / 切模型 / 四档预设 / 128 路起停（假模型）
+      - name: model catalog and presets
+        run: node tests/model.test.mjs

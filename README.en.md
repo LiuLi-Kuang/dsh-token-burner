@@ -30,8 +30,10 @@ Built and measured against **DSH NEXT for desktop** (`deepseek-harness`, profile
 | API | Purpose |
 |---|---|
 | `ctx.llm.stream({ provider, model, messages, maxTokens, signal })` | issue a request; yields `text-delta` / `usage` / `finish` chunks |
-| `ctx.llm.resolveModelInfo(provider, model)` | validate the model before starting |
-| `ctx.webServer.register({ kind: 'exact', path, handler })` | the four HTTP endpoints the UI talks to |
+| `ctx.llm.resolveModelInfo(provider, model)` | validate the model before starting, and on every switch |
+| `ctx.llm.listProviders()` + `ctx.llm.listModels(provider)` | where the Provider / Model controls get their options |
+| `ctx.get('agentDefaultModel').currentSelection()` | the profile's default model, asked for when none is configured |
+| `ctx.webServer.register({ kind: 'exact', path, handler })` | the seven HTTP endpoints the UI talks to |
 | `ctx.get('connection').requestRejection(req)` | trust fence (Host/Origin + browser login) |
 | `ctx.effect(() => cleanup)` | abort on dispose |
 | `ctx.slots.inject('settings.section')` + `ctx.slots.register(...)` | mount the settings section |
@@ -64,9 +66,9 @@ Everything lives in the package's `cordis.patch.yml` (the `config` of the `inser
 |---|---:|---|
 | `autoStart` | `false` | Only a literal `true` starts a burn on load. Anything else means idle |
 | `locale` | `auto` | UI language: `auto` follows the system (zh → Chinese, else English), or `zh` / `en` |
-| `provider` | `magpie` | your provider |
-| `model` | `workbuddy/deepseek-v4.1-flash` | your model; validated at start |
-| `preset` | `max` | `max` = 16 lanes × 64KB, `high` = 8 lanes × 32KB |
+| `provider` | empty | not a fixed value: **empty = follow the profile's default model** (`agent-default-model`), asked from the host at load; a row of buttons in Settings, options from the host's `listProviders()`
+| `model` | empty | not a fixed value: **empty = follow the profile's default model**; a dropdown in Settings listing the current provider's models from the host catalog, validated with `resolveModelInfo` on every switch
+| `preset` | `max` | `high` = 8 lanes × 32KB, `max` = 16 lanes × 64KB (default), `ultra` = 64 lanes × 128KB, `extreme` = 128 lanes × 256KB
 | `maxTokens` | `128` | per-request output cap |
 | `gapMs` | `0` | pause between turns |
 | `workers` / `fillerKb` | — | only used when `preset` is absent (custom tuning) |
@@ -75,15 +77,20 @@ Everything lives in the package's `cordis.patch.yml` (the `config` of the `inser
 
 ## UI
 
-One section under **Settings → Token Burner** (a `settings.section`, not a floating window):
+One section under **Settings → Token Burner** (a `settings.section`, not a floating window), top to bottom:
 
-- **Preset buttons**: `16 lanes × 64KB` (default) / `8 lanes × 32KB`; switching rebuilds every stream (counters reset)
-- **Language buttons**: `System` / `中文` / `English`, following the system by default
-- Four metric cards: total tokens, rate, in/out, turns · uptime
-- Six status rows: provider·model, preset, lanes·max output, input filler, auto-start, error/stop reason
-- Start / Stop / Refresh
+| Block | What |
+|---|---|
+| **Title + actions** | status dot and “Burning / Idle” on the left, Start / Stop / Refresh on the right — reachable as soon as the page opens |
+| **Model** | Provider as a row of buttons, **queried from the host** (`listProviders()`), refreshed every 30s and on Refresh; providers with no usable model are greyed out. Model as a dropdown listing every model of the current provider |
+| **Preset** | four buttons: `8 lanes × 32KB` / `16 lanes × 64KB` (default) / `64 lanes × 128KB` / `128 lanes × 256KB`; switching rebuilds every stream (counters reset) |
+| **Language** | `System` / `中文` / `English`, following the system by default |
+| **Data** | a 2×2 grid: total tokens, rate, in/out, turns · uptime |
+| **Details** | lanes·max output, input filler, auto-start, error / stop reason |
 
-The UI choice is written to `~/.dsh/token-burner.json` — the plugin never rewrites the profile's `cordis.patch.yml`. Delete that file to fall back to the values in the patch.
+All three choices (model, preset, language) are written to `~/.dsh/token-burner.json` — the plugin never rewrites the profile's `cordis.patch.yml`. Delete that file to fall back to the values in the patch.
+
+Switching the model behaves like switching presets: if it is burning, it stops first and restarts on the new route. An unknown model is rejected and the current config is left untouched. If a saved route has gone stale (different machine, provider removed), starting falls back to the profile's default model.
 
 ## Two ways to burn (measured)
 
@@ -136,7 +143,7 @@ ctx.effect(() => () => {
 
 ## Security
 
-- The four endpoints only answer loopback requests and pass through `connection.requestRejection` (fail-closed): if the port ever binds to `0.0.0.0`, pages on the LAN still can't drive it.
+- The seven endpoints only answer loopback requests and pass through `connection.requestRejection` (fail-closed): if the port ever binds to `0.0.0.0`, pages on the LAN still can't drive it.
 - Everything the section shows comes from the host; the client doesn't cache or infer.
 - The plugin never reads provider keys: it uses the route already configured in the profile.
 
@@ -146,25 +153,28 @@ ctx.effect(() => () => {
 npm test
 ```
 
-Four offline tests (fake ctx, fake model stream — no network, no bill):
+Five offline tests (fake ctx, fake model stream — no network, no bill):
 
 | Test | Covers |
 |---|---|
-| `tests/selftest.mjs` | start → burn → stop → really stopped → preset switch |
-| `tests/section.test.mjs` | loader id / `inject` / `settings.section` registration / bilingual labels |
+| `tests/selftest.test.mjs` | start → burn → stop → really stopped → preset switch |
+| `tests/section.test.mjs` | loader id / `inject` / `settings.section` registration / zh-en key parity; also renders the component with stubs (empty state, full state: 5 providers · 25 models · four presets) |
 | `tests/no-autostart.test.mjs` | `{}`, `"true"` and `false` all mean idle |
 | `tests/locale.test.mjs` | `auto` resolution, `zh`/`en` override, persistence, invalid values rejected, stop reason is a code |
+| `tests/model.test.mjs` | follows the host default model, catalog, switching, persistence, invalid model rejected, stale route falls back, four presets, 128 lanes start/stop (transient errors don't trip the kill switch) |
 
 CI runs them on Node 22 and 24.
 
 ## Known limits
 
 - If a provider never emits a `usage` chunk, the token counter stays at 0 (the bill doesn't).
-- 16 lanes is the highest measured preset (92s, 9.97M tokens, zero failures); beyond that the local gateway usually gives up first. Failures back off; quota/credential errors stop everything.
+- **16 lanes is the highest measured preset** (92s, 9.97M tokens, zero failures). `ultra` (64 lanes) and `extreme` (128 lanes) have **not been measured against a real provider** — only started and stopped against a fake model. Expect the local gateway to give out first; the UI shows an “untested” hint when either is selected.
+- Backoff is exponential per lane, based on that lane’s own consecutive failures. Everything stops only when no lane has succeeded for `2 × workers` failures (at least 12). Quota/credential errors stop everything at once.
 - Measured on Windows against a local gateway; rates will differ elsewhere.
 
 ## Changelog
 
+- **0.3.0** — Provider and model are no longer fixed values: **empty means follow the profile's default model** (asked from the host at load; a stale saved route falls back to it too). New **provider buttons + model dropdown** in Settings, also queried from the host. Presets went from two to **four** (+64 lanes × 128KB, +128 lanes × 256KB — neither measured against a real provider). Settings page restructured: actions moved to the top, content grouped into Model / Preset / Language / Data / Details. Fixed a real bug: backoff and the “too many errors” kill switch used the global error count, so a few transient errors at high concurrency stopped everything; both are now per lane.
 - **0.2.0** — Bilingual UI. Language defaults to the system (`auto`: zh → Chinese, otherwise English), switchable in Settings, persisted in `~/.dsh/token-burner.json`. The host now returns stop *codes* (`panel` / `plugin-disabled` / `preset-switch` / `fatal` / `too-many-errors` / `model-unavailable`) and the client translates them.
 - **0.1.1** — Fixes “starts on boot”. `autoStart` now defaults to `false` and only a literal `true` counts. 0.1.0 defaulted to on; one boot on 2026-11-24 burned 15,061,579 tokens in 92 seconds.
 - **0.1.0** — First release: two presets (16×64 default / 8×32), Settings switch and live rate, CI.

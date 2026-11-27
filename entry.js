@@ -32,16 +32,19 @@ const API = '/plugins/dsh-token-burner/api'
  * 只改这两个数就够——它们决定了每秒能倒出去多少 token。
  */
 const PRESETS = {
-  max: { workers: 16, fillerKb: 64, label: '16 × 64KB' },
   high: { workers: 8, fillerKb: 32, label: '8 × 32KB' },
+  max: { workers: 16, fillerKb: 64, label: '16 × 64KB' },
+  ultra: { workers: 64, fillerKb: 128, label: '64 × 128KB' },
+  extreme: { workers: 128, fillerKb: 256, label: '128 × 256KB' },
 }
 
 /** 一条请求都没发出去时不至于空转的兜底配置。 */
 const DEFAULTS = {
   autoStart: false,
   locale: 'auto',
-  provider: 'magpie',
-  model: 'workbuddy/deepseek-v4.1-flash',
+  // 留空 = 跟随 profile 的默认模型（agent-default-model），启动时向宿主要。
+  provider: '',
+  model: '',
   preset: 'max',
   workers: 4,
   maxTokens: 8192,
@@ -141,6 +144,25 @@ function resolveLocale(locale) {
   return locale === 'auto' || LOCALES.includes(locale) !== true ? systemLocale() : locale
 }
 
+/**
+ * 宿主给新 agent 用的默认模型——也就是用户在 DSH 里选的「默认模型」。
+ * 插件不写死任何提供方：没配置、或者配置的那条路由失效了，都用它。
+ * @param {any} ctx - Host 插件上下文。
+ * @returns {{provider: string, model: string} | null} 宿主没有这个服务时为 null。
+ */
+function hostDefaultRoute(ctx) {
+  try {
+    const selection = typeof ctx?.get === 'function' ? ctx.get('agentDefaultModel') : undefined
+    if (typeof selection?.currentSelection !== 'function') return null
+    const picked = selection.currentSelection()
+    if (typeof picked?.provider !== 'string' || picked.provider === '') return null
+    if (typeof picked?.model !== 'string' || picked.model === '') return null
+    return { provider: picked.provider, model: picked.model }
+  } catch {
+    return null
+  }
+}
+
 /** 把任意 throw 收成一行能给面板看的文本。 */
 function describe(error) {
   if (error === null || error === undefined) return '未知错误'
@@ -189,7 +211,7 @@ function normalize(config) {
     // 'auto' = 跟随系统；解析留给 resolveLocale()，这样改了系统语言不用改配置
     locale: LOCALES.includes(raw.locale) ? raw.locale : DEFAULTS.locale,
     preset,
-    workers: tuned ? tuned.workers : clampInt(raw.workers, DEFAULTS.workers, 1, 32),
+    workers: tuned ? tuned.workers : clampInt(raw.workers, DEFAULTS.workers, 1, 256),
     maxTokens: clampInt(raw.maxTokens, DEFAULTS.maxTokens, 64, 200_000),
     gapMs: clampInt(raw.gapMs, DEFAULTS.gapMs, 0, 60_000),
     fillerKb: tuned ? tuned.fillerKb : clampInt(raw.fillerKb, DEFAULTS.fillerKb, 0, 512),
@@ -224,6 +246,7 @@ function createBurner(ctx, cfg, log) {
   let stopDetail = ''
   let lastErrorCode = ''
   let lastError = ''
+  let consecutiveErrors = 0
   let inflight = 0
   let lastTurnMs = 0
   const tasks = new Set()
@@ -333,6 +356,10 @@ function createBurner(ctx, cfg, log) {
 
   /** 一条并发 lane：一直烧到 running 变假或信号 abort。 */
   async function burn(index, signal) {
+    // 退避按"这一路自己连续失败了几次"算，全停按"所有路中间没有任何成功"算。
+    // 早先两项都用全局累计错误数：128 路下偶发几个瞬时错误就会把阈值顶满，
+    // 而且之后每一次退避都按全局错误数指数涨，高档位根本跑不起来。
+    let laneFails = 0
     while (running && !signal.aborted) {
       const began = Date.now()
       try {
@@ -340,9 +367,13 @@ function createBurner(ctx, cfg, log) {
         if (!running) break
         stats.turns += 1
         lastTurnMs = Date.now() - began
+        laneFails = 0
+        consecutiveErrors = 0
       } catch (error) {
         if (!running || signal.aborted) break
         stats.errors += 1
+        consecutiveErrors += 1
+        laneFails += 1
         lastErrorCode = 'lane-error'
         lastError = describe(error)
         log(`[token-burner] lane ${String(index)} 失败：${lastError}`)
@@ -351,12 +382,12 @@ function createBurner(ctx, cfg, log) {
           void stop('fatal', lastError)
           break
         }
-        if (stats.errors >= 12) {
-          // 连环失败（网关没起、模型挂了）：退避几十秒也救不回来，别让它在后台空转刷日志。
-          void stop('too-many-errors', String(stats.errors))
+        if (consecutiveErrors >= Math.max(12, cfg.workers * 2)) {
+          // 一条都没成功过（网关没起、模型挂了）：退避也救不回来，别让它在后台空转刷日志。
+          void stop('too-many-errors', String(consecutiveErrors))
           break
         }
-        await sleep(Math.min(30_000, 1_000 * 2 ** Math.min(stats.errors, 5)), signal)
+        await sleep(Math.min(30_000, 1_000 * 2 ** Math.min(laneFails - 1, 5)), signal)
       }
       if (running) await sleep(cfg.gapMs, signal)
     }
@@ -373,6 +404,7 @@ function createBurner(ctx, cfg, log) {
     stats.reasoningTokens = 0
     lastError = ''
     lastErrorCode = ''
+    consecutiveErrors = 0
     lastTurnMs = 0
     stopCode = ''
     stopDetail = ''
@@ -387,7 +419,18 @@ function createBurner(ctx, cfg, log) {
     }
     try {
       if (typeof ctx.llm.resolveModelInfo === 'function') {
-        await ctx.llm.resolveModelInfo(cfg.provider, cfg.model)
+        try {
+          await ctx.llm.resolveModelInfo(cfg.provider, cfg.model)
+        } catch (error) {
+          // 这条路由不可用（换过机器、提供方被删了……）：退回宿主默认模型再试一次。
+          const fallback = hostDefaultRoute(ctx)
+          if (fallback === null || (fallback.provider === cfg.provider && fallback.model === cfg.model)) throw error
+          await ctx.llm.resolveModelInfo(fallback.provider, fallback.model)
+          log(`[token-burner] 配置的 ${cfg.provider}/${cfg.model} 不可用，已退回宿主默认模型 ${fallback.provider}/${fallback.model}`)
+          cfg.provider = fallback.provider
+          cfg.model = fallback.model
+          catalogCache.built = false
+        }
       }
     } catch (error) {
       lastErrorCode = 'model-unavailable'
@@ -471,10 +514,91 @@ function createBurner(ctx, cfg, log) {
   }
 
   /**
+   * 设置页「提供方 / 模型」两组按钮的数据源。
+   *
+   * 目录向宿主的 llm 服务要（listProviders + listModels），缓存 30 秒：
+   * listModels 对某些适配器要走网络，不该跟着设置页每 1.5 秒刷一次。
+   * @param {boolean} force - 跳过缓存。
+   */
+  async function catalog(force = false) {
+    if (!force && catalogCache.built && Date.now() - catalogCache.at < 30_000) {
+      return { ok: true, providers: catalogCache.providers, provider: cfg.provider, model: cfg.model }
+    }
+    const providers = []
+    try {
+      if (typeof ctx.llm?.listProviders === 'function') {
+        const listed = ctx.llm.listProviders()
+        for (const item of Array.isArray(listed) ? listed : []) {
+          const id = typeof item === 'string' ? item : item?.id
+          if (typeof id !== 'string' || id === '') continue
+          let models = []
+          try {
+            const found = typeof ctx.llm.listModels === 'function' ? await ctx.llm.listModels(id) : []
+            models = (Array.isArray(found) ? found : [])
+              .filter((model) => typeof model?.id === 'string' && model.id !== '')
+              .map((model) => ({ id: model.id, name: typeof model.name === 'string' && model.name !== '' ? model.name : model.id }))
+          } catch {
+            /* 这个提供方的目录拉不到：照常列出来，只是模型列表为空 */
+          }
+          providers.push({ id, name: typeof item?.displayName === 'string' && item.displayName !== '' ? item.displayName : id, models })
+        }
+      }
+    } catch {
+      /* llm 服务还没就绪：下面至少把当前这一项兜住 */
+    }
+    // 当前用的那一条必须在目录里，否则设置页选不中它
+    const ensure = (providerId, modelId) => {
+      let entry = providers.find((item) => item.id === providerId)
+      if (entry === undefined) {
+        entry = { id: providerId, name: providerId, models: [] }
+        providers.push(entry)
+      }
+      if (modelId !== '' && entry.models.every((model) => model.id !== modelId)) {
+        entry.models.push({ id: modelId, name: modelId })
+      }
+    }
+    if (cfg.provider !== '') ensure(cfg.provider, cfg.model)
+    catalogCache = { built: true, at: Date.now(), providers }
+    return { ok: true, providers, provider: cfg.provider, model: cfg.model }
+  }
+
+  /**
+   * 切模型：设置页「提供方 / 模型」按钮调的就是这里。
+   * 先用 resolveModelInfo 校验（不合法就拒绝，不动现有配置），再熄火 → 换路由 → 重点火。
+   * @param {string} provider - 提供方 id。
+   * @param {string} model - 模型 id。
+   */
+  async function setModel(provider, model) {
+    const providerId = String(provider ?? '').trim()
+    const modelId = String(model ?? '').trim()
+    if (providerId === '' || modelId === '') return { ok: false, error: 'provider and model are required' }
+    try {
+      if (typeof ctx.llm?.resolveModelInfo === 'function') await ctx.llm.resolveModelInfo(providerId, modelId)
+    } catch (error) {
+      return { ok: false, error: describe(error) }
+    }
+    if (cfg.provider === providerId && cfg.model === modelId) return { ok: true, unchanged: true }
+    const wasRunning = running
+    if (wasRunning) await stop('model-switch', `${providerId}/${modelId}`)
+    cfg.provider = providerId
+    cfg.model = modelId
+    const saved = saveSaved({ provider: providerId, model: modelId })
+    catalogCache.built = false // 当前项变了，目录要重新兜底
+    if (wasRunning) {
+      const started = await start()
+      if (started.ok !== true) return { ok: false, error: started.error, saved }
+    }
+    log(`[token-burner] 模型 → ${providerId}/${modelId}`)
+    return { ok: true, provider: providerId, model: modelId, saved }
+  }
+
+  /**
    * 改界面语言。'auto' 跟随系统，'zh'/'en' 是显式覆盖。
    * 只影响设置页文案，不影响燃烧行为——所以运行中改也不用重建流。
    * @param {string} name - 'auto' | 'zh' | 'en'。
    */
+  let catalogCache = { built: false, at: 0, providers: [] }
+
   function setLocale(name) {
     const key = String(name ?? '').trim().toLowerCase()
     if (LOCALES.includes(key) !== true) {
@@ -486,7 +610,7 @@ function createBurner(ctx, cfg, log) {
     return { ok: true, locale: key, resolvedLocale: resolveLocale(key), saved }
   }
 
-  return { start, stop, setPreset, setLocale, snapshot, cfg }
+  return { start, stop, setPreset, setLocale, setModel, catalog, snapshot, cfg }
 }
 
 /** 包名，loader 用它挂这一行。 */
@@ -510,6 +634,17 @@ export function apply(ctx, config) {
     cfg.fillerKb = PRESETS[saved.preset].fillerKb
   }
   if (LOCALES.includes(saved.locale)) cfg.locale = saved.locale
+  if (typeof saved.provider === 'string' && saved.provider !== '' && typeof saved.model === 'string' && saved.model !== '') {
+    cfg.provider = saved.provider
+    cfg.model = saved.model
+  } else if (cfg.provider === '' || cfg.model === '') {
+    // 提供方和模型不是固定值：装上之后现问宿主「新 agent 默认用哪个模型」。
+    const fallback = hostDefaultRoute(ctx)
+    if (fallback !== null) {
+      cfg.provider = fallback.provider
+      cfg.model = fallback.model
+    }
+  }
   const log = (line) => {
     try {
       ctx.logger?.info?.(line)
@@ -524,6 +659,11 @@ export function apply(ctx, config) {
   }
 
   const burner = createBurner(ctx, cfg, log)
+  // 挂载时拉一次目录写进日志：确认宿主 llm 服务的目录接口可用，也方便排查"设置页没有提供方按钮"。
+  void burner
+    .catalog()
+    .then((found) => log(`[token-burner] 模型目录：${found.providers.map((item) => `${item.id}(${String(item.models.length)})`).join(' ') || '（空）'} ｜ 当前 ${found.provider || '—'}/${found.model || '—'}`))
+    .catch((error) => log(`[token-burner] 模型目录读取失败：${describe(error)}`))
   const disposers = []
   const json = (res, status, body) => {
     res.statusCode = status
@@ -629,7 +769,22 @@ export function apply(ctx, config) {
     json(res, 200, burner.setLocale(body?.locale))
   })
 
-  // 换档：设置页那组按钮。默认 16 路 × 64KB，另一档 8 路 × 32KB。
+  // 模型目录：提供方 + 每个提供方下的模型。设置页每次打开拉一次，之后走缓存。
+  route(`${API}/catalog`, async (_req, res) => {
+    json(res, 200, await burner.catalog())
+  })
+
+  // 切模型：设置页「提供方 / 模型」按钮。
+  route(`${API}/model`, async (req, res) => {
+    if (req.method !== 'POST') {
+      json(res, 405, { ok: false, error: '用 POST' })
+      return
+    }
+    const body = await readBody(req)
+    json(res, 200, await burner.setModel(body?.provider, body?.model))
+  })
+
+  // 换档：设置页那组按钮。默认 max = 16 路 × 64KB。
   route(`${API}/preset`, async (req, res) => {
     if (req.method !== 'POST') {
       json(res, 405, { ok: false, error: '用 POST' })

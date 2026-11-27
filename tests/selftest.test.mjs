@@ -1,7 +1,7 @@
 /**
  * 假 ctx 自测：不碰真模型、不花一分钱，只验证"开→烧→停→真停"这条命。
  *
- *   node tests/selftest.mjs
+ *   node tests/selftest.test.mjs
  *
  * 覆盖四件事：
  *   1. apply 后 autoStart 真的开始发请求（并且 workers 路并发）
@@ -13,6 +13,7 @@
 import assert from 'node:assert/strict'
 import os from 'node:os'
 import path from 'node:path'
+import { mkdirSync, rmSync } from 'node:fs'
 import { apply } from '../entry.js'
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -101,6 +102,9 @@ async function call(handler, { method = 'GET', body } = {}) {
 
 // 档位是持久化的，测试必须写在临时 DSH_HOME 里，别动真实的那份。
 process.env.DSH_HOME = path.join(os.tmpdir(), 'dsh-token-burner-test')
+// 每次从干净状态开始：这个文件会跨轮次保留上一次选的档位/语言/模型。
+mkdirSync(process.env.DSH_HOME, { recursive: true })
+rmSync(path.join(process.env.DSH_HOME, 'token-burner.json'), { force: true })
 
 const counter = { calls: 0 }
 const { ctx, routes, runCleanup } = makeCtx(counter)

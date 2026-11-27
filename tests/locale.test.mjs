@@ -11,13 +11,16 @@
 import assert from 'node:assert/strict'
 import os from 'node:os'
 import path from 'node:path'
-import { readFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { apply } from '../entry.js'
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 const HOME = path.join(os.tmpdir(), 'dsh-token-burner-test-locale')
 process.env.DSH_HOME = HOME
+// 每次从干净状态开始：这个文件会跨轮次保留上一次选的档位/语言/模型。
+mkdirSync(HOME, { recursive: true })
+rmSync(path.join(HOME, 'token-burner.json'), { force: true })
 
 function makeCtx() {
   const routes = new Map()

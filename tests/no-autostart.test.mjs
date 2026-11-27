@@ -10,12 +10,16 @@
 import assert from 'node:assert/strict'
 import os from 'node:os'
 import path from 'node:path'
+import { mkdirSync, rmSync } from 'node:fs'
 import { apply } from '../entry.js'
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 // 档位会落盘，测试写进临时 DSH_HOME，别动真实的那份。
 process.env.DSH_HOME = path.join(os.tmpdir(), 'dsh-token-burner-test-noauto')
+// 每次从干净状态开始：这个文件会跨轮次保留上一次选的档位/语言/模型。
+mkdirSync(process.env.DSH_HOME, { recursive: true })
+rmSync(path.join(process.env.DSH_HOME, 'token-burner.json'), { force: true })
 
 /** 假模型：只数调用次数，永远不会被调用才对。 */
 function makeCtx(counter) {
